@@ -13,4 +13,5 @@ public:
 
 private slots:
     void handleRequest(QHttpRequest *req, QHttpResponse *resp);
+    void handleDisconnect(QHttpConnection *conn);
 };

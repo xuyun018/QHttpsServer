@@ -25,26 +25,24 @@
 #include <QTcpSocket>
 #include <QHostAddress>
 
-#include "http_parser.h"
 #include "qhttprequest.h"
 #include "qhttpresponse.h"
 #include "qsslserver.h"
 
 /// @cond nodoc
 
-QHttpConnection::QHttpConnection(QTcpSocket *socket, QObject *parent)
+QHttpConnection::QHttpConnection(QTcpSocket *socket, int ssl, QObject *parent)
     : QObject(parent),
       m_socket(socket),
-      m_parser(NULL),
-      m_parserSettings(NULL),
       m_request(NULL),
       m_transmitLen(0),
-      m_transmitPos(0)
+      m_transmitPos(0),
+      m_ssl(ssl)
 {
-    m_parser = (http_parser *)malloc(sizeof(http_parser));
     http_parser_init(m_parser, HTTP_REQUEST);
 
-    m_parserSettings = new http_parser_settings();
+    memset(m_parserSettings, 0, sizeof(m_parserSettings));
+
     m_parserSettings->on_message_begin = MessageBegin;
     m_parserSettings->on_url = Url;
     m_parserSettings->on_header_field = HeaderField;
@@ -59,17 +57,23 @@ QHttpConnection::QHttpConnection(QTcpSocket *socket, QObject *parent)
     connect(socket, &QTcpSocket::disconnected, this, &QHttpConnection::socketDisconnected);
     connect(socket, &QTcpSocket::bytesWritten, this, &QHttpConnection::updateWriteCount);
 
-    QVariant isSslSocket = m_socket->property("isSslSocket");
-    if (isSslSocket.isValid()) {
-        QSslSocket *sslsocket = (QSslSocket *)socket;
-        connect(sslsocket, &QSslSocket::encrypted, this, &QHttpConnection::encrypted);
-        connect(sslsocket, &QSslSocket::peerVerifyError, this, &QHttpConnection::peerVerifyError);
-        typedef void (QSslSocket::* sslErrorsSignal)(const QList<QSslError> &);
-        //connect(sslsocket, SIGNAL(sslErrors(const QList<QSslError> &)), this, SLOT(sslErrors(const QList<QSslError> &)));
-        connect(sslsocket, static_cast<sslErrorsSignal>(&QSslSocket::sslErrors), this, &QHttpConnection::sslErrors);
-        connect(sslsocket, &QSslSocket::modeChanged, this, &QHttpConnection::modeChanged);
-        connect(sslsocket, &QSslSocket::encryptedBytesWritten, this, &QHttpConnection::encryptedBytesWritten);
-        sslsocket->startServerEncryption();
+    if (m_ssl)
+    {
+        QVariant isSslSocket = m_socket->property("isSslSocket");
+        if (isSslSocket.isValid()) {
+            QSslSocket *sslsocket = (QSslSocket *)socket;
+
+            //sslsocket->setPeerVerifyMode(QSslSocket::VerifyNone);
+            //sslsocket->ignoreSslErrors();
+
+            connect(sslsocket, &QSslSocket::encrypted, this, &QHttpConnection::encrypted);
+            connect(sslsocket, &QSslSocket::peerVerifyError, this, &QHttpConnection::peerVerifyError);
+            //connect(sslsocket, SIGNAL(sslErrors(const QList<QSslError> &)), this, SLOT(sslErrors(const QList<QSslError> &)));
+            connect(sslsocket, static_cast<void (QSslSocket::*)(const QList<QSslError> &)>(&QSslSocket::sslErrors), this, &QHttpConnection::sslErrors);
+            connect(sslsocket, &QSslSocket::modeChanged, this, &QHttpConnection::modeChanged);
+            connect(sslsocket, &QSslSocket::encryptedBytesWritten, this, &QHttpConnection::encryptedBytesWritten);
+            sslsocket->startServerEncryption();
+        }
     }
 }
 
@@ -77,12 +81,6 @@ QHttpConnection::~QHttpConnection()
 {
     delete m_socket;
     m_socket = NULL;
-
-    free(m_parser);
-    m_parser = NULL;
-
-    delete m_parserSettings;
-    m_parserSettings = NULL;
 }
 
 void QHttpConnection::encrypted()
@@ -99,22 +97,28 @@ void QHttpConnection::peerVerifyError(const QSslError &error)
 void QHttpConnection::sslErrors(const QList<QSslError> &errors)
 {
     qDebug() << "sslErrors";
+
+    QSslSocket *sslsocket = qobject_cast<QSslSocket*>(sender());
+
+    sslsocket->ignoreSslErrors();
 }
 
-void QHttpConnection::modeChanged(QSslSocket::SslMode /*newMode*/)
+void QHttpConnection::modeChanged(QSslSocket::SslMode newMode)
 {
-    qDebug() << "modeChanged";
+    qDebug() << "modeChanged" << newMode;
 }
 
-void QHttpConnection::encryptedBytesWritten(qint64 /*totalBytes*/)
+void QHttpConnection::encryptedBytesWritten(qint64 totalBytes)
 {
-    qDebug() << "encryptedBytesWritten";
+    qDebug() << "encryptedBytesWritten" << totalBytes;
 }
 
 void QHttpConnection::socketDisconnected()
 {
     deleteLater();
     invalidateRequest();
+
+    Q_EMIT socket1Disconnected(this);
 }
 
 void QHttpConnection::invalidateRequest()
@@ -142,11 +146,14 @@ void QHttpConnection::updateWriteCount(qint64 count)
 
 void QHttpConnection::parseRequest()
 {
-    Q_ASSERT(m_parser);
-
     while (m_socket->bytesAvailable()) {
         QByteArray arr = m_socket->readAll();
         http_parser_execute(m_parser, m_parserSettings, arr.constData(), arr.size());
+
+        //qDebug() << "parseRequest";
+        //qDebug() << m_parser->content_length;
+        //qDebug() << arr.size();
+        //qDebug() << QString((char *)arr.constData());
     }
 }
 
@@ -224,11 +231,12 @@ int QHttpConnection::MessageBegin(http_parser *parser)
 
     // The QHttpRequest should not be parented to this, since it's memory
     // management is the responsibility of the user of the library.
-    theConnection->m_request = new QHttpRequest(theConnection);
+    QHttpRequest *prequest = new QHttpRequest(theConnection);
+    theConnection->m_request = prequest;
 
     // Invalidate the request when it is deleted to prevent keep-alive requests
     // from calling a signal on a deleted object.
-    connect(theConnection->m_request, SIGNAL(destroyed(QObject*)), theConnection, SLOT(invalidateRequest()));
+    connect(prequest, &QHttpRequest::destroyed, theConnection, &QHttpConnection::invalidateRequest);
 
     return 0;
 }
@@ -261,6 +269,7 @@ int QHttpConnection::HeadersComplete(http_parser *parser)
     theConnection->m_request->setHeaders(theConnection->m_currentHeaders);
 
     /** set client information **/
+    theConnection->m_socket->peerAddress().toIPv4Address();
     theConnection->m_request->m_remoteAddress = theConnection->m_socket->peerAddress().toString();
     theConnection->m_request->m_remotePort = theConnection->m_socket->peerPort();
 
@@ -334,6 +343,10 @@ int QHttpConnection::Body(http_parser *parser, const char *at, size_t length)
 {
     QHttpConnection *theConnection = static_cast<QHttpConnection *>(parser->data);
     Q_ASSERT(theConnection->m_request);
+
+    qDebug() << "Body";
+    qDebug() << length;
+    qDebug() << QString((char *)at);
 
     Q_EMIT theConnection->m_request->data(QByteArray(at, length));
     return 0;

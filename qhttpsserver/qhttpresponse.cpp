@@ -41,6 +41,8 @@ QHttpResponse::QHttpResponse(QHttpConnection *connection)
       m_last(false),
       m_useChunkedEncoding(false),
       m_finished(false)
+
+        //
 {
     connect(m_connection, &QHttpConnection::allBytesWritten, this, &QHttpResponse::allBytesWritten);
 }

@@ -96,6 +96,8 @@ QHttpServer::QHttpServer(QObject *parent) : QObject(parent), m_tcpServer(0)
     STATUS_CODE(509, "Bandwidth Limit Exceeded")
     STATUS_CODE(510, "Not Extended") // RFC 2774
     // }}}
+
+    m_ssl = 0;
 }
 
 QHttpServer::~QHttpServer()
@@ -111,11 +113,12 @@ void QHttpServer::newConnection()
 
     while (m_tcpServer->hasPendingConnections()) {
         QHttpConnection *connection =
-            new QHttpConnection(m_tcpServer->nextPendingConnection(), this);
-        //connect(connection, SIGNAL(newRequest(QHttpRequest *, QHttpResponse *)), this,
-        //        SIGNAL(newRequest(QHttpRequest *, QHttpResponse *)));
+            new QHttpConnection(m_tcpServer->nextPendingConnection(), m_ssl, this);
+
         connect(connection, &QHttpConnection::newRequest, this,
                 &QHttpServer::newRequest);
+        connect(connection, &QHttpConnection::socket1Disconnected, this,
+                &QHttpServer::socket1Disconnected);
     }
 }
 
@@ -134,53 +137,64 @@ bool QHttpServer::listen(const QHostAddress &address,
                          const QString &keyFilePath,
                          const QList< QPair< QString, bool > > &caFileList)
 {
-    QFile fileForCrt( crtFilePath );
-    if ( !fileForCrt.open( QIODevice::ReadOnly ) )
-    {
-        qDebug() << "SslServerManage::listen: error: can not open file:" << crtFilePath;
-        return false;
-    }
+    QSslConfiguration sslConfiguration;
+    int ssl;
 
-    QFile fileForKey( keyFilePath );
-    if ( !fileForKey.open( QIODevice::ReadOnly ) )
+    ssl = !crtFilePath.isEmpty() && !keyFilePath.isEmpty();
+    m_ssl = ssl;
+    if (ssl)
     {
-        qDebug() << "SslServerManage::listen: error: can not open file:" << keyFilePath;
-        return false;
-    }
-
-    QList< QSslCertificate > caCertificates;
-    for (int i = 0; i < caFileList.size(); i++) {
-        const QPair< QString, bool >& caFile = caFileList.at(i);
-        QFile fileForCa( caFile.first );
-        if ( !fileForCa.open( QIODevice::ReadOnly ) )
+        QFile fileForCrt( crtFilePath );
+        if ( !fileForCrt.open( QIODevice::ReadOnly ) )
         {
-            qDebug() << "SslServerManage::listen: error: can not open file:" << caFile.first;
+            qDebug() << "SslServerManage::listen: error: can not open file:" << crtFilePath;
             return false;
         }
-        caCertificates.push_back( QSslCertificate( fileForCa.readAll(), ( caFile.second ) ? ( QSsl::Pem ) : ( QSsl::Der ) ) );
+
+        QFile fileForKey( keyFilePath );
+        if ( !fileForKey.open( QIODevice::ReadOnly ) )
+        {
+            qDebug() << "SslServerManage::listen: error: can not open file:" << keyFilePath;
+            return false;
+        }
+
+        QList< QSslCertificate > caCertificates;
+        for (int i = 0; i < caFileList.size(); i++) {
+            const QPair< QString, bool >& caFile = caFileList.at(i);
+            QFile fileForCa( caFile.first );
+            if ( !fileForCa.open( QIODevice::ReadOnly ) )
+            {
+                qDebug() << "SslServerManage::listen: error: can not open file:" << caFile.first;
+                return false;
+            }
+            caCertificates.push_back( QSslCertificate( fileForCa.readAll(), ( caFile.second ) ? ( QSsl::Pem ) : ( QSsl::Der ) ) );
+        }
+
+        QSslCertificate sslCertificate( fileForCrt.readAll(), QSsl::Pem );
+        QSslKey sslKey( fileForKey.readAll(), QSsl::Rsa, QSsl::Pem, QSsl::PrivateKey );
+
+        sslConfiguration.setPeerVerifyMode( QSslSocket::VerifyNone );
+        sslConfiguration.setLocalCertificate( sslCertificate );
+        sslConfiguration.setPrivateKey( sslKey );
+        sslConfiguration.setProtocol(QSsl::TlsV1_2);
+        //sslConfiguration.setProtocol(QSsl::TlsV1_2OrLater);
+        sslConfiguration.setCaCertificates( caCertificates );
     }
 
-    QSslCertificate sslCertificate( fileForCrt.readAll(), QSsl::Pem );
-    QSslKey sslKey( fileForKey.readAll(), QSsl::Rsa, QSsl::Pem, QSsl::PrivateKey );
+    m_tcpServer = new QSslServer(this);
+    if (ssl)
+    {
+        ((QSslServer*)m_tcpServer)->setSslConfiguration(sslConfiguration);
+    }
 
-    QSslConfiguration sslConfiguration;
-    sslConfiguration.setPeerVerifyMode( QSslSocket::VerifyNone );
-    sslConfiguration.setLocalCertificate( sslCertificate );
-    sslConfiguration.setPrivateKey( sslKey );
-    sslConfiguration.setProtocol(QSsl::TlsV1_2);
-    sslConfiguration.setCaCertificates( caCertificates );
-
-     m_tcpServer = new QSslServer(this);
-     ((QSslServer*)m_tcpServer)->setSslConfiguration(sslConfiguration);
-
-     bool couldBindToPort = m_tcpServer->listen(address, port);
-     if (couldBindToPort) {
-         connect(m_tcpServer, &QSslServer::newConnection, this, &QHttpServer::newConnection);
-     } else {
-         delete m_tcpServer;
-         m_tcpServer = NULL;
-     }
-     return couldBindToPort;
+    bool couldBindToPort = m_tcpServer->listen(address, port);
+    if (couldBindToPort) {
+     connect(m_tcpServer, &QSslServer::newConnection, this, &QHttpServer::newConnection);
+    } else {
+     delete m_tcpServer;
+     m_tcpServer = NULL;
+    }
+    return couldBindToPort;
 }
 
 bool QHttpServer::listen(const QHostAddress &address, quint16 port)

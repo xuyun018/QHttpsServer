@@ -23,6 +23,8 @@
 #ifndef Q_HTTP_CONNECTION
 #define Q_HTTP_CONNECTION
 
+#include "qhttprequest.h"
+#include "qhttpresponse.h"
 #include "qhttpserverapi.h"
 #include "qhttpserverfwd.h"
 
@@ -32,6 +34,8 @@
 #include <QSslSocket>
 #include <QSslError>
 
+#include "http-parser/http_parser.h"
+
 /// @cond nodoc
 
 class QHTTPSERVER_API QHttpConnection : public QObject
@@ -39,7 +43,7 @@ class QHTTPSERVER_API QHttpConnection : public QObject
     Q_OBJECT
 
 public:
-    QHttpConnection(QTcpSocket *socket, QObject *parent = 0);
+    QHttpConnection(QTcpSocket *socket, int ssl, QObject *parent = 0);
     virtual ~QHttpConnection();
 
     void write(const QByteArray &data);
@@ -49,6 +53,8 @@ public:
 Q_SIGNALS:
     void newRequest(QHttpRequest *, QHttpResponse *);
     void allBytesWritten();
+
+    void socket1Disconnected(QHttpConnection *);
 
 private Q_SLOTS:
     // ssl
@@ -76,8 +82,8 @@ private:
 
 private:
     QTcpSocket *m_socket;
-    http_parser *m_parser;
-    http_parser_settings *m_parserSettings;
+    http_parser m_parser[1];
+    http_parser_settings m_parserSettings[1];
 
     // Since there can only be one request at any time even with pipelining.
     QHttpRequest *m_request;
@@ -91,6 +97,8 @@ private:
     // Keep track of transmit buffer status
     qint64 m_transmitLen;
     qint64 m_transmitPos;
+
+    int m_ssl;
 };
 
 /// @endcond

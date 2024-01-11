@@ -27,6 +27,7 @@
 #define QHTTPSERVER_VERSION_MINOR 1
 #define QHTTPSERVER_VERSION_PATCH 0
 
+#include "qhttpconnection.h"
 #include "qhttpserverapi.h"
 #include "qhttpserverfwd.h"
 
@@ -101,12 +102,15 @@ Q_SIGNALS:
         @param request New incoming request.
         @param response Response object to the request. */
     void newRequest(QHttpRequest *request, QHttpResponse *response);
+    void socket1Disconnected(QHttpConnection *conn);
 
 private Q_SLOTS:
     void newConnection();
 
 private:
     QTcpServer *m_tcpServer;
+
+    int m_ssl;
 };
 
 #endif
